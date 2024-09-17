@@ -6,34 +6,68 @@ use std::str::FromStr;
 
 const K_MAX_MSG: usize = 4096;
 
+// Guard against partial writes
+fn write_full(fd: RawFd, wbuf: &mut[u8]) -> Result<usize, Errno> {
+    let mut buf_start = 0;
+    let mut n = wbuf.len();
+    while n > 0 {
+        match write(fd, &mut wbuf[buf_start..]) {
+            Ok(rv) => {
+                if rv <= 0 {
+                    println!("Zero bytes written");
+                    return Err(Errno::EIO);
+                }
+                assert!(rv <= n);
+                n -= rv;
+                buf_start += rv;
+            },
+            Err(e) => {
+                println!("Error while writing {}", e);
+                return Err(e);
+            }
+        }
+    }
+    Ok(n)
+}
+
+// Guard against partial reads
+fn read_full(fd: RawFd, rbuf: &mut[u8]) -> Result<usize, Errno> {
+    let mut buf_start = 0;
+    let mut n = rbuf.len();
+    while n > 0 {
+        match read(fd, &mut rbuf[buf_start..]) {
+            Ok(rv) => {
+                if rv <= 0 {
+                    println!("Zero bytes read");
+                    return Err(Errno::EIO);
+                }
+                assert!(rv <= n);
+                n -= rv;
+                buf_start += rv;
+            },
+            Err(e) => {
+                println!("Error while reading {}", e);
+                return Err(e);
+            }
+        }
+    }
+    Ok(n)
+}
+
 fn query(fd: RawFd, text: &str) -> Result<usize, Errno> {
     let reply: &[u8] = text.as_bytes();
     let mut wbuf = [0; K_MAX_MSG];
     let length = u32::try_from(reply.len()).unwrap();
     wbuf[0..4].copy_from_slice(&length.to_le_bytes());
     wbuf[4..4 + reply.len()].copy_from_slice(reply);
-    match write(fd, &mut wbuf[0..4 + reply.len()]) {
-        Ok(rv) => {
-            if rv <= 0 {
-                println!("Zero bytes written");
-                return Err(Errno::EIO);
-            }
-        },
-        Err(e) => {
-            println!("Error while writing {}", e);
-            return Err(e);
-        }
-    }
+    write_full(fd, &mut wbuf[0..4 + reply.len()])?;
 
     let mut len_buf: [u8; 4] = [0; 4];
     let length;
     let mut rbuf: [u8; K_MAX_MSG] = [0; K_MAX_MSG];
-    match read(fd, &mut len_buf) {
-        Ok(rv) => {
+    match read_full(fd, &mut len_buf) {
+        Ok(_) => {
             length = u32::from_le_bytes(len_buf);
-            if rv <= 0 {
-                return Err(Errno::EIO);
-            }
         },
         Err(e) => {
             println!("read() error {}", e);
@@ -41,11 +75,8 @@ fn query(fd: RawFd, text: &str) -> Result<usize, Errno> {
         }
     }
 
-    match read(fd, &mut rbuf[..length.try_into().unwrap()]) {
-        Ok(rv) => {
-            if rv <= 0 {
-                return Err(Errno::EIO);
-            }
+    match read_full(fd, &mut rbuf[..length.try_into().unwrap()]) {
+        Ok(_) => {
             println!("Server says {}", String::from_utf8(rbuf[..length.try_into().unwrap()].to_vec()).unwrap());
         }
         Err(e) => {
