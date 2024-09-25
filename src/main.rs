@@ -54,14 +54,16 @@ fn read_full(fd: RawFd, rbuf: &mut[u8]) -> Result<usize, Errno> {
     Ok(n)
 }
 
-fn query(fd: RawFd, text: &str) -> Result<usize, Errno> {
+fn send_request(fd: RawFd, text: &str) -> Result<usize, Errno> {
     let reply: &[u8] = text.as_bytes();
     let mut wbuf = [0; K_MAX_MSG];
     let length = u32::try_from(reply.len()).unwrap();
     wbuf[0..4].copy_from_slice(&length.to_le_bytes());
     wbuf[4..4 + reply.len()].copy_from_slice(reply);
-    write_full(fd, &mut wbuf[0..4 + reply.len()])?;
+    write_full(fd, &mut wbuf[0..4 + reply.len()])
+}
 
+fn read_response(fd: RawFd) -> Result<usize, Errno> {
     let mut len_buf: [u8; 4] = [0; 4];
     let length;
     let mut rbuf: [u8; K_MAX_MSG] = [0; K_MAX_MSG];
@@ -87,6 +89,11 @@ fn query(fd: RawFd, text: &str) -> Result<usize, Errno> {
     Ok(0)
 }
 
+fn query(fd: RawFd, text: &str) -> Result<usize, Errno> {
+    send_request(fd, text)?;
+    read_response(fd)
+}
+
 fn main() {
     let fd = socket(AddressFamily::Inet, SockType::Stream, SockFlag::empty(), None);
 
@@ -95,9 +102,19 @@ fn main() {
             let localhost = SockaddrIn::from_str("127.0.0.1:8081").unwrap();
             match connect(fd, &localhost) {
                 Ok(()) => {
-                    let _ = query(fd, "hello1");
-                    let _ = query(fd, "hello2");
-                    let _ = query(fd, "hello3");
+                    let requests = ["hello1", "hello2", "hello3"];
+                    for r in requests.iter() {
+                        if let Err(e) = send_request(fd, r) {
+                            println!("Error {} sending request {}", e, r);
+                            let _ = close(fd);
+                            return;
+                        }
+                    }
+                    for _ in 0..3 {
+                        if let Err(_) = read_response(fd) {
+                            return;
+                        }
+                    }
                 },
                 Err(e) => {
                     println!("Error connecting to server {}", e);
